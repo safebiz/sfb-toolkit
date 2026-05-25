@@ -2,8 +2,8 @@
 /**
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
- * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API. REST endpoints for AI worker bridge.
- * Version:     1.0.0
+ * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker. REST endpoints for AI worker bridge.
+ * Version:     1.1.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -22,9 +22,6 @@ new SFB_GitHub_Updater( [
 ] );
 
 // ── 1. FILE VERIFY ──────────────────────────────────────────────────────────
-// Endpoint-uri read-only pentru verificarea hash-ului child theme files.
-// Folosit de: wat/tools/file-verify-check.js
-
 add_action( 'rest_api_init', function () {
     register_rest_route( 'sfb/v1', '/verify/functions-php', [
         'methods'             => 'GET',
@@ -60,11 +57,7 @@ function sfbtk_verify_theme_file( $filename ) {
 }
 
 // ── 2. NONCE PROVIDER ───────────────────────────────────────────────────────
-// Expune wp_rest nonce pentru MasterC bridge + acces read/write la sure* options.
-// Folosit de: skills fluentcrm, surerank, suremembers, suredash, surecookies
-
 add_action( 'rest_api_init', function () {
-    // GET /wp-json/masterc/v1/nonce
     register_rest_route( 'masterc/v1', '/nonce', [
         'methods'             => 'GET',
         'callback'            => function () {
@@ -77,7 +70,6 @@ add_action( 'rest_api_init', function () {
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
 
-    // GET /wp-json/masterc/v1/nonce-test
     register_rest_route( 'masterc/v1', '/nonce-test', [
         'methods'             => 'GET',
         'callback'            => function ( $request ) {
@@ -93,7 +85,6 @@ add_action( 'rest_api_init', function () {
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
 
-    // GET|POST /wp-json/masterc/v1/option
     register_rest_route( 'masterc/v1', '/option', [
         'methods'             => [ 'GET', 'POST' ],
         'callback'            => function ( $request ) {
@@ -111,7 +102,6 @@ add_action( 'rest_api_init', function () {
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
 
-    // GET /wp-json/masterc/v1/options-list
     register_rest_route( 'masterc/v1', '/options-list', [
         'methods'             => 'GET',
         'callback'            => function () {
@@ -131,3 +121,111 @@ add_action( 'rest_api_init', function () {
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
 } );
+
+// ── 3. ARTICLE MODIFICATION TRACKER ─────────────────────────────────────────
+// Captureaza save_post pe articole published si trimite webhook la n8n.
+// Activat din WP Admin → Settings → SFB Toolkit.
+// Configuratie: sfbtk_article_tracker_enabled, sfbtk_tracker_client_id, sfbtk_tracker_n8n_url
+
+add_action( 'pre_post_update', function ( $post_id, $data ) {
+    if ( ! get_option( 'sfbtk_article_tracker_enabled', 0 ) ) return;
+    if ( get_post_type( $post_id ) !== 'post' ) return;
+    $old = get_post( $post_id );
+    if ( ! $old || $old->post_status !== 'publish' ) return;
+    set_transient( 'sfbtk_pre_' . $post_id, [
+        'title'   => $old->post_title,
+        'content' => $old->post_content,
+    ], 120 );
+}, 10, 2 );
+
+add_action( 'post_updated', function ( $post_id, $post_after, $post_before ) {
+    if ( ! get_option( 'sfbtk_article_tracker_enabled', 0 ) ) return;
+    if ( $post_after->post_type !== 'post' ) return;
+    if ( $post_after->post_status !== 'publish' ) return;
+
+    $pre = get_transient( 'sfbtk_pre_' . $post_id );
+    delete_transient( 'sfbtk_pre_' . $post_id );
+
+    $client_id = get_option( 'sfbtk_tracker_client_id', '' );
+    $n8n_url   = get_option( 'sfbtk_tracker_n8n_url', 'https://n8n.safebiz.ro/webhook/article-modification' );
+    if ( ! $client_id ) return;
+
+    $words_before = str_word_count( strip_tags( $post_before->post_content ) );
+    $words_after  = str_word_count( strip_tags( $post_after->post_content ) );
+
+    wp_remote_post( $n8n_url, [
+        'body'     => wp_json_encode( [
+            'client_id'         => $client_id,
+            'wp_post_id'        => $post_id,
+            'wp_post_url'       => get_permalink( $post_id ),
+            'modification_type' => 'manual_edit',
+            'applied_by'        => 'human',
+            'diff_summary'      => [
+                'title_changed' => ( $pre['title'] ?? '' ) !== $post_after->post_title,
+                'words_before'  => $words_before,
+                'words_after'   => $words_after,
+                'words_delta'   => $words_after - $words_before,
+            ],
+        ] ),
+        'headers'  => [ 'Content-Type' => 'application/json' ],
+        'blocking' => false,
+        'timeout'  => 5,
+    ] );
+}, 10, 3 );
+
+// ── 3.1. SETTINGS PAGE ──────────────────────────────────────────────────────
+add_action( 'admin_menu', function () {
+    add_options_page(
+        'SFB Toolkit',
+        'SFB Toolkit',
+        'manage_options',
+        'sfb-toolkit',
+        'sfbtk_settings_page'
+    );
+} );
+
+add_action( 'admin_init', function () {
+    register_setting( 'sfbtk_options', 'sfbtk_article_tracker_enabled', [ 'type' => 'boolean', 'default' => 0 ] );
+    register_setting( 'sfbtk_options', 'sfbtk_tracker_client_id',       [ 'type' => 'string',  'default' => '' ] );
+    register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => 'https://n8n.safebiz.ro/webhook/article-modification' ] );
+} );
+
+function sfbtk_settings_page() {
+    ?>
+    <div class="wrap">
+        <h1>SFB Toolkit Settings</h1>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'sfbtk_options' ); ?>
+            <table class="form-table">
+                <tr>
+                    <th>Article Modification Tracker</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="sfbtk_article_tracker_enabled" value="1"
+                                <?php checked( 1, get_option( 'sfbtk_article_tracker_enabled', 0 ) ); ?> />
+                            Activat — trimite webhook la n8n la fiecare save_post pe articole published
+                        </label>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Client ID</th>
+                    <td>
+                        <input type="text" name="sfbtk_tracker_client_id"
+                            value="<?php echo esc_attr( get_option( 'sfbtk_tracker_client_id', '' ) ); ?>"
+                            placeholder="mpss / salonnunta / safebiz" class="regular-text" />
+                    </td>
+                </tr>
+                <tr>
+                    <th>n8n Webhook URL</th>
+                    <td>
+                        <input type="url" name="sfbtk_tracker_n8n_url"
+                            value="<?php echo esc_attr( get_option( 'sfbtk_tracker_n8n_url', 'https://n8n.safebiz.ro/webhook/article-modification' ) ); ?>"
+                            class="regular-text" />
+                    </td>
+                </tr>
+            </table>
+            <?php submit_button(); ?>
+        </form>
+    </div>
+    <?php
+}
