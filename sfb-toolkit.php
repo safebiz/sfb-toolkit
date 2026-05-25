@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker. REST endpoints for AI worker bridge.
- * Version:     1.1.0
+ * Version:     1.2.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -23,6 +23,8 @@ new SFB_GitHub_Updater( [
 
 // ── 1. FILE VERIFY ──────────────────────────────────────────────────────────
 add_action( 'rest_api_init', function () {
+    if ( ! get_option( 'sfbtk_file_verify_enabled', 1 ) ) return;
+
     register_rest_route( 'sfb/v1', '/verify/functions-php', [
         'methods'             => 'GET',
         'callback'            => fn() => sfbtk_verify_theme_file( 'functions.php' ),
@@ -58,6 +60,8 @@ function sfbtk_verify_theme_file( $filename ) {
 
 // ── 2. NONCE PROVIDER ───────────────────────────────────────────────────────
 add_action( 'rest_api_init', function () {
+    if ( ! get_option( 'sfbtk_nonce_enabled', 1 ) ) return;
+
     register_rest_route( 'masterc/v1', '/nonce', [
         'methods'             => 'GET',
         'callback'            => function () {
@@ -185,6 +189,8 @@ add_action( 'admin_menu', function () {
 } );
 
 add_action( 'admin_init', function () {
+    register_setting( 'sfbtk_options', 'sfbtk_file_verify_enabled',     [ 'type' => 'boolean', 'default' => 1 ] );
+    register_setting( 'sfbtk_options', 'sfbtk_nonce_enabled',           [ 'type' => 'boolean', 'default' => 1 ] );
     register_setting( 'sfbtk_options', 'sfbtk_article_tracker_enabled', [ 'type' => 'boolean', 'default' => 0 ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_client_id',       [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => 'https://n8n.safebiz.ro/webhook/article-modification' ] );
@@ -197,6 +203,26 @@ function sfbtk_settings_page() {
         <form method="post" action="options.php">
             <?php settings_fields( 'sfbtk_options' ); ?>
             <table class="form-table">
+                <tr>
+                    <th>File Verify (sfb/v1)</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="sfbtk_file_verify_enabled" value="1"
+                                <?php checked( 1, get_option( 'sfbtk_file_verify_enabled', 1 ) ); ?> />
+                            Activat — endpoints <code>/sfb/v1/verify/functions-php</code> și <code>/sfb/v1/verify/style-css</code>
+                        </label>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Nonce Provider (masterc/v1)</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="sfbtk_nonce_enabled" value="1"
+                                <?php checked( 1, get_option( 'sfbtk_nonce_enabled', 1 ) ); ?> />
+                            Activat — endpoints <code>/masterc/v1/nonce</code>, <code>/masterc/v1/nonce-test</code>, <code>/masterc/v1/option</code>, <code>/masterc/v1/options-list</code>
+                        </label>
+                    </td>
+                </tr>
                 <tr>
                     <th>Article Modification Tracker</th>
                     <td>
