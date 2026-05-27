@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.5.0
+ * Version:     1.5.1
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -11,11 +11,13 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.5.1 (2026-05-27) — Security hardening of /write-lang-file after GPT-5.4 + Claude
+ *                        audit: DROP .l10n.php (data-only — no PHP code-exec vector);
+ *                        5MB size cap; atomic write (temp + rename + LOCK_EX); realpath
+ *                        confinement to WP_LANG_DIR; reject NUL/control chars; chmod 0644.
  *   1.5.0 (2026-05-27) — New /masterc/v1/write-lang-file endpoint: deploy translation
- *                        files (.po/.mo/.json/.l10n.php) into wp-content/languages/
- *                        {plugins,themes}/ via REST. Enables i18n (gettext + wp.i18n
- *                        React strings) on sites WITHOUT SSH. Strict filename whitelist
- *                        + manage_options + no path traversal. Casaluxc dogfood.
+ *                        files into wp-content/languages/{plugins,themes}/ via REST.
+ *                        Enables i18n (gettext + wp.i18n React strings) on no-SSH sites.
  *   1.4.0 (2026-05-27) — /option: fix double-encode TypeError (accept both object
  *                        and JSON-string value); extend whitelist to allow
  *                        `litespeed.conf.*` options (cache excludes config via REST
@@ -151,9 +153,11 @@ add_action( 'rest_api_init', function () {
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
 
-    // Write a translation file (.po/.mo/.json/.l10n.php) into wp-content/languages/{plugins,themes}/.
+    // Write a translation DATA file (.po/.mo/.json) into wp-content/languages/{plugins,themes}/.
     // Enables deploying gettext + JS i18n (wp.i18n) translations on sites WITHOUT SSH access.
     // Content is sent base64-encoded; compiled .mo + JSON i18n are produced client-side.
+    // SECURITY: data-only — NO executable extensions (.php) accepted. Admin-gated, size-capped,
+    // atomic write, realpath-confined to WP_LANG_DIR. (Audited GPT-5.4 + Claude, 2026-05-27.)
     register_rest_route( 'masterc/v1', '/write-lang-file', [
         'methods'             => 'POST',
         'callback'            => function ( $request ) {
@@ -164,29 +168,45 @@ add_action( 'rest_api_init', function () {
             if ( ! in_array( $type, [ 'plugins', 'themes' ], true ) ) {
                 return new WP_Error( 'bad_type', 'type must be plugins|themes', [ 'status' => 400 ] );
             }
-            // Allow only translation filename patterns: {td}-{locale}[-{md5}].{po|mo|json} OR {td}-{locale}.l10n.php
-            $valid = preg_match( '/^[a-z0-9_-]+-[a-z]{2,3}_[A-Z]{2}(-[a-f0-9]{32})?\.(po|mo|json)$/', $filename )
-                  || preg_match( '/^[a-z0-9_-]+-[a-z]{2,3}_[A-Z]{2}\.l10n\.php$/', $filename );
-            if ( ! $valid ) {
-                return new WP_Error( 'bad_filename', 'invalid translation filename', [ 'status' => 400 ] );
+            // Data-only whitelist: {td}-{locale}[-{md5}].{po|mo|json}. NO .php (no code-exec vector).
+            if ( ! preg_match( '/^[a-z0-9_-]+-[a-z]{2,3}_[A-Z]{2}(-[a-f0-9]{32})?\.(po|mo|json)$/', $filename ) ) {
+                return new WP_Error( 'bad_filename', 'invalid translation filename (allowed: *.po/.mo/.json)', [ 'status' => 400 ] );
             }
-            // Defense-in-depth: no path traversal.
-            if ( strpos( $filename, '/' ) !== false || strpos( $filename, '\\' ) !== false || strpos( $filename, '..' ) !== false ) {
-                return new WP_Error( 'bad_filename', 'filename must not contain path separators', [ 'status' => 400 ] );
+            // Defense-in-depth: reject path separators, traversal, NUL/control chars.
+            if ( strpbrk( $filename, "/\\\0" ) !== false || strpos( $filename, '..' ) !== false ) {
+                return new WP_Error( 'bad_filename', 'filename must not contain path separators or control chars', [ 'status' => 400 ] );
             }
             $content = base64_decode( $b64, true );
             if ( false === $content ) {
                 return new WP_Error( 'bad_b64', 'content_base64 invalid', [ 'status' => 400 ] );
+            }
+            // Size cap: 5 MB decoded (translation files are tiny; this blocks abuse).
+            if ( strlen( $content ) > 5 * 1024 * 1024 ) {
+                return new WP_Error( 'too_large', 'content exceeds 5MB cap', [ 'status' => 413 ] );
             }
 
             $dir = trailingslashit( WP_LANG_DIR ) . $type;
             if ( ! file_exists( $dir ) ) {
                 wp_mkdir_p( $dir );
             }
-            $path = trailingslashit( $dir ) . $filename;
-            $bytes = file_put_contents( $path, $content );
+            // Confirm the resolved directory is really inside WP_LANG_DIR (realpath confinement).
+            $real_dir  = realpath( $dir );
+            $real_base = realpath( WP_LANG_DIR );
+            if ( false === $real_dir || false === $real_base || strpos( $real_dir, $real_base ) !== 0 ) {
+                return new WP_Error( 'bad_dir', 'target dir escapes WP_LANG_DIR', [ 'status' => 400 ] );
+            }
+            $path = trailingslashit( $real_dir ) . $filename;
+
+            // Atomic write: temp file in same dir + rename (no partial/corrupt file on failure).
+            $tmp = $path . '.tmp-' . wp_generate_password( 8, false );
+            $bytes = file_put_contents( $tmp, $content, LOCK_EX );
             if ( false === $bytes ) {
-                return new WP_Error( 'write_failed', 'could not write file (check permissions)', [ 'status' => 500 ] );
+                return new WP_Error( 'write_failed', 'could not write temp file (check permissions)', [ 'status' => 500 ] );
+            }
+            @chmod( $tmp, 0644 );
+            if ( ! @rename( $tmp, $path ) ) {
+                @unlink( $tmp );
+                return new WP_Error( 'rename_failed', 'could not finalize file', [ 'status' => 500 ] );
             }
             return [ 'written' => true, 'path' => str_replace( ABSPATH, '', $path ), 'bytes' => $bytes ];
         },
