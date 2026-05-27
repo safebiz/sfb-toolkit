@@ -2,18 +2,28 @@
 /**
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
- * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker. REST endpoints for AI worker bridge.
- * Version:     1.2.0
+ * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
+ * Version:     1.3.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
  * Requires PHP: 7.4
  * Requires WP:  6.0
+ *
+ * Changelog:
+ *   1.3.0 (2026-05-27) — Added HMAC auth helper + inventory collector module
+ *                        (/wp-json/sfb/v1/inventory, HMAC-protected) for change
+ *                        tracking pipeline (Migration 018). Trigger: task #2300.
+ *   1.2.0 — Toggle on/off per module in Settings Page
+ *   1.1.0 — Article Modification Tracker + Settings Page
+ *   1.0.0 — Initial release (file verify + nonce provider + options API)
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 require_once __DIR__ . '/includes/class-sfb-github-updater.php';
+require_once __DIR__ . '/includes/class-sfb-hmac.php';
+require_once __DIR__ . '/includes/class-sfb-inventory.php';
 new SFB_GitHub_Updater( [
     'plugin_file'  => __FILE__,
     'github_repo'  => 'safebiz/sfb-toolkit',
@@ -194,6 +204,7 @@ add_action( 'admin_init', function () {
     register_setting( 'sfbtk_options', 'sfbtk_article_tracker_enabled', [ 'type' => 'boolean', 'default' => 0 ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_client_id',       [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => 'https://n8n.safebiz.ro/webhook/article-modification' ] );
+    register_setting( 'sfbtk_options', 'sfbtk_inventory_enabled',       [ 'type' => 'boolean', 'default' => 1 ] );
 } );
 
 function sfbtk_settings_page() {
@@ -230,6 +241,16 @@ function sfbtk_settings_page() {
                             <input type="checkbox" name="sfbtk_article_tracker_enabled" value="1"
                                 <?php checked( 1, get_option( 'sfbtk_article_tracker_enabled', 0 ) ); ?> />
                             Activat — trimite webhook la n8n la fiecare save_post pe articole published
+                        </label>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Inventory Collector (sfb/v1/inventory)</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="sfbtk_inventory_enabled" value="1"
+                                <?php checked( 1, get_option( 'sfbtk_inventory_enabled', 1 ) ); ?> />
+                            Activat — endpoint HMAC-protejat <code>/sfb/v1/inventory</code> pentru change-tracking pipeline (plugins, files, options)
                         </label>
                     </td>
                 </tr>
