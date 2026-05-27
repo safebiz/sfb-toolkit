@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.4.0
+ * Version:     1.5.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -11,6 +11,11 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.5.0 (2026-05-27) — New /masterc/v1/write-lang-file endpoint: deploy translation
+ *                        files (.po/.mo/.json/.l10n.php) into wp-content/languages/
+ *                        {plugins,themes}/ via REST. Enables i18n (gettext + wp.i18n
+ *                        React strings) on sites WITHOUT SSH. Strict filename whitelist
+ *                        + manage_options + no path traversal. Casaluxc dogfood.
  *   1.4.0 (2026-05-27) — /option: fix double-encode TypeError (accept both object
  *                        and JSON-string value); extend whitelist to allow
  *                        `litespeed.conf.*` options (cache excludes config via REST
@@ -142,6 +147,48 @@ add_action( 'rest_api_init', function () {
                 )
             );
             return array_map( fn( $r ) => $r->option_name, $results );
+        },
+        'permission_callback' => fn() => current_user_can( 'manage_options' ),
+    ] );
+
+    // Write a translation file (.po/.mo/.json/.l10n.php) into wp-content/languages/{plugins,themes}/.
+    // Enables deploying gettext + JS i18n (wp.i18n) translations on sites WITHOUT SSH access.
+    // Content is sent base64-encoded; compiled .mo + JSON i18n are produced client-side.
+    register_rest_route( 'masterc/v1', '/write-lang-file', [
+        'methods'             => 'POST',
+        'callback'            => function ( $request ) {
+            $filename = (string) $request->get_param( 'filename' );
+            $type     = (string) $request->get_param( 'type' );
+            $b64      = (string) $request->get_param( 'content_base64' );
+
+            if ( ! in_array( $type, [ 'plugins', 'themes' ], true ) ) {
+                return new WP_Error( 'bad_type', 'type must be plugins|themes', [ 'status' => 400 ] );
+            }
+            // Allow only translation filename patterns: {td}-{locale}[-{md5}].{po|mo|json} OR {td}-{locale}.l10n.php
+            $valid = preg_match( '/^[a-z0-9_-]+-[a-z]{2,3}_[A-Z]{2}(-[a-f0-9]{32})?\.(po|mo|json)$/', $filename )
+                  || preg_match( '/^[a-z0-9_-]+-[a-z]{2,3}_[A-Z]{2}\.l10n\.php$/', $filename );
+            if ( ! $valid ) {
+                return new WP_Error( 'bad_filename', 'invalid translation filename', [ 'status' => 400 ] );
+            }
+            // Defense-in-depth: no path traversal.
+            if ( strpos( $filename, '/' ) !== false || strpos( $filename, '\\' ) !== false || strpos( $filename, '..' ) !== false ) {
+                return new WP_Error( 'bad_filename', 'filename must not contain path separators', [ 'status' => 400 ] );
+            }
+            $content = base64_decode( $b64, true );
+            if ( false === $content ) {
+                return new WP_Error( 'bad_b64', 'content_base64 invalid', [ 'status' => 400 ] );
+            }
+
+            $dir = trailingslashit( WP_LANG_DIR ) . $type;
+            if ( ! file_exists( $dir ) ) {
+                wp_mkdir_p( $dir );
+            }
+            $path = trailingslashit( $dir ) . $filename;
+            $bytes = file_put_contents( $path, $content );
+            if ( false === $bytes ) {
+                return new WP_Error( 'write_failed', 'could not write file (check permissions)', [ 'status' => 500 ] );
+            }
+            return [ 'written' => true, 'path' => str_replace( ABSPATH, '', $path ), 'bytes' => $bytes ];
         },
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
