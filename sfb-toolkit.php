@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.3.0
+ * Version:     1.4.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -11,6 +11,10 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.4.0 (2026-05-27) — /option: fix double-encode TypeError (accept both object
+ *                        and JSON-string value); extend whitelist to allow
+ *                        `litespeed.conf.*` options (cache excludes config via REST
+ *                        on no-SSH sites). Discovered casaluxc dogfood.
  *   1.3.0 (2026-05-27) — Added HMAC auth helper + inventory collector module
  *                        (/wp-json/sfb/v1/inventory, HMAC-protected) for change
  *                        tracking pipeline (Migration 018). Trigger: task #2300.
@@ -103,12 +107,19 @@ add_action( 'rest_api_init', function () {
         'methods'             => [ 'GET', 'POST' ],
         'callback'            => function ( $request ) {
             $name = $request->get_param( 'name' );
-            if ( ! $name || ! preg_match( '/^(surecookie|suremembers|suredash|surerank)_/', $name ) ) {
-                return new WP_Error( 'invalid_option', 'Only sure* options allowed', [ 'status' => 400 ] );
+            if ( ! $name || ! preg_match( '/^(surecookie|suremembers|suredash|surerank)_|^litespeed\.conf\./', $name ) ) {
+                return new WP_Error( 'invalid_option', 'Only sure*/litespeed.conf.* options allowed', [ 'status' => 400 ] );
             }
             if ( 'POST' === $request->get_method() ) {
                 $value = $request->get_param( 'value' );
-                update_option( $name, json_decode( $value, true ) ?: $value );
+                if ( is_array( $value ) ) {
+                    // REST framework already decoded a JSON object body.
+                    update_option( $name, $value );
+                } else {
+                    // String value — may itself be a JSON-encoded payload.
+                    $decoded = json_decode( $value, true );
+                    update_option( $name, ( null !== $decoded ) ? $decoded : $value );
+                }
                 return [ 'updated' => true, 'name' => $name ];
             }
             return [ 'name' => $name, 'value' => get_option( $name, '__NOT_FOUND__' ) ];
