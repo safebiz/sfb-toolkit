@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.5.1
+ * Version:     1.5.7
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -11,6 +11,22 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.5.7 (2026-05-29) — Fix conflict hardening login_page_exposed vs WPS Hide Login: gate-ul
+ *                        `defined('WPS_HIDE_LOGIN_VERSION')` era evaluat în constructor la
+ *                        include-time, dar SFB se încarcă alfabetic ÎNAINTEA wps-hide-login →
+ *                        constanta nu era încă definită → protect_login se înregistra mereu și
+ *                        redirecționa login-ul custom (ex: /beleppo) spre home. Fix: înregistrează
+ *                        protect_login mereu pe init, mută verificarea defined() la runtime în
+ *                        protect_login(). Bug raportat galprogressio (WPS Hide Login 1.9.18).
+ *   1.5.4 (2026-05-28) — Security hardening module: Fix wp_generator_visible (remove meta
+ *                        generator tag), missing_security_headers (X-Frame-Options,
+ *                        X-Content-Type-Options, Referrer-Policy, Permissions-Policy via
+ *                        PHP send_headers hook — server-agnostic), login_page_exposed
+ *                        fallback redirect. Whitelist extins cu whl_page (WPS Hide Login).
+ *   1.5.3 (2026-05-28) — Fix settings page: remove n8n.safebiz.ro from form field default.
+ *   1.5.2 (2026-05-28) — Article tracker: remove hardcoded n8n.safebiz.ro default URL
+ *                        (privacy fix — strangers installing plugin would send data to our
+ *                        webhook); add guard: tracker silent-skips if n8n_url is empty.
  *   1.5.1 (2026-05-27) — Security hardening of /write-lang-file after GPT-5.4 + Claude
  *                        audit: DROP .l10n.php (data-only — no PHP code-exec vector);
  *                        5MB size cap; atomic write (temp + rename + LOCK_EX); realpath
@@ -35,6 +51,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 require_once __DIR__ . '/includes/class-sfb-github-updater.php';
 require_once __DIR__ . '/includes/class-sfb-hmac.php';
 require_once __DIR__ . '/includes/class-sfb-inventory.php';
+require_once __DIR__ . '/includes/class-sfb-hardening.php';
+new SFB_Hardening();
 new SFB_GitHub_Updater( [
     'plugin_file'  => __FILE__,
     'github_repo'  => 'safebiz/sfb-toolkit',
@@ -114,8 +132,8 @@ add_action( 'rest_api_init', function () {
         'methods'             => [ 'GET', 'POST' ],
         'callback'            => function ( $request ) {
             $name = $request->get_param( 'name' );
-            if ( ! $name || ! preg_match( '/^(surecookie|suremembers|suredash|surerank)_|^litespeed\.conf\./', $name ) ) {
-                return new WP_Error( 'invalid_option', 'Only sure*/litespeed.conf.* options allowed', [ 'status' => 400 ] );
+            if ( ! $name || ! preg_match( '/^(surecookie|suremembers|suredash|surerank)_|^litespeed\.conf\.|^whl_page$/', $name ) ) {
+                return new WP_Error( 'invalid_option', 'Only sure*/litespeed.conf.*/whl_page options allowed', [ 'status' => 400 ] );
             }
             if ( 'POST' === $request->get_method() ) {
                 $value = $request->get_param( 'value' );
@@ -239,8 +257,8 @@ add_action( 'post_updated', function ( $post_id, $post_after, $post_before ) {
     delete_transient( 'sfbtk_pre_' . $post_id );
 
     $client_id = get_option( 'sfbtk_tracker_client_id', '' );
-    $n8n_url   = get_option( 'sfbtk_tracker_n8n_url', 'https://n8n.safebiz.ro/webhook/article-modification' );
-    if ( ! $client_id ) return;
+    $n8n_url   = get_option( 'sfbtk_tracker_n8n_url', '' );
+    if ( ! $client_id || ! $n8n_url ) return;
 
     $words_before = str_word_count( strip_tags( $post_before->post_content ) );
     $words_after  = str_word_count( strip_tags( $post_after->post_content ) );
@@ -281,7 +299,7 @@ add_action( 'admin_init', function () {
     register_setting( 'sfbtk_options', 'sfbtk_nonce_enabled',           [ 'type' => 'boolean', 'default' => 1 ] );
     register_setting( 'sfbtk_options', 'sfbtk_article_tracker_enabled', [ 'type' => 'boolean', 'default' => 0 ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_client_id',       [ 'type' => 'string',  'default' => '' ] );
-    register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => 'https://n8n.safebiz.ro/webhook/article-modification' ] );
+    register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_inventory_enabled',       [ 'type' => 'boolean', 'default' => 1 ] );
 } );
 
@@ -344,7 +362,7 @@ function sfbtk_settings_page() {
                     <th>n8n Webhook URL</th>
                     <td>
                         <input type="url" name="sfbtk_tracker_n8n_url"
-                            value="<?php echo esc_attr( get_option( 'sfbtk_tracker_n8n_url', 'https://n8n.safebiz.ro/webhook/article-modification' ) ); ?>"
+                            value="<?php echo esc_attr( get_option( 'sfbtk_tracker_n8n_url', '' ) ); ?>"
                             class="regular-text" />
                     </td>
                 </tr>
