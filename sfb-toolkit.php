@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.5.7
+ * Version:     1.5.8
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -11,6 +11,11 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.5.8 (2026-06-10) — New /masterc/v1/rankmath-redirect endpoint: insert deterministic 301
+ *                        redirect in wp_rank_math_redirections via RankMath\Redirections\DB::add
+ *                        (corect serializare sources + 301 servit imediat, validat live monitorstup).
+ *                        Idempotent (nu dublează pattern exact). Paritate F6 cu SureRank /redirection
+ *                        pentru cele ~17/21 site-uri RankMath fără SSH. Tool: fix-404-redirect.js.
  *   1.5.7 (2026-05-29) — Fix conflict hardening login_page_exposed vs WPS Hide Login: gate-ul
  *                        `defined('WPS_HIDE_LOGIN_VERSION')` era evaluat în constructor la
  *                        include-time, dar SFB se încarcă alfabetic ÎNAINTEA wps-hide-login →
@@ -230,7 +235,68 @@ add_action( 'rest_api_init', function () {
         },
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
     ] );
+
+    // RankMath redirect insert — paritate F6 cu SureRank /redirection (RankMath n-are REST pt redirect arbitrar).
+    register_rest_route( 'masterc/v1', '/rankmath-redirect', [
+        'methods'             => 'POST',
+        'callback'            => 'sfbtk_rankmath_redirect',
+        'permission_callback' => fn() => current_user_can( 'manage_options' ),
+    ] );
 } );
+
+// Insert deterministic în wp_rank_math_redirections via clasa oficială DB::add (serializare corectă +
+// 301 servit imediat, verificat live monitorstup 2026-06-10). Idempotent: nu dublează un pattern exact.
+function sfbtk_rankmath_redirect( $request ) {
+    if ( ! class_exists( '\RankMath\Redirections\DB' ) ) {
+        return new WP_Error( 'rankmath_redirections_inactive', 'RankMath Redirections module inactiv (sau RankMath neinstalat)', [ 'status' => 409 ] );
+    }
+    $from = (string) $request->get_param( 'from' );
+    $to   = (string) $request->get_param( 'to' );
+    $code = (int) ( $request->get_param( 'header_code' ) ?: 301 );
+    if ( '' === $from || '' === $to ) {
+        return new WP_Error( 'bad_request', 'parametrii "from" si "to" sunt obligatorii', [ 'status' => 400 ] );
+    }
+    if ( ! in_array( $code, [ 301, 302, 307, 308, 410, 451 ], true ) ) { $code = 301; }
+
+    // pattern exact = path fără slash-uri de capăt (cum normalizează RankMath get_clean_pattern)
+    $from_path = wp_parse_url( $from, PHP_URL_PATH );
+    $pattern   = trim( $from_path ? $from_path : $from, '/' );
+    if ( '' === $pattern ) {
+        return new WP_Error( 'bad_request', '"from" invalid (pattern gol dupa normalizare)', [ 'status' => 400 ] );
+    }
+    $to_path = wp_parse_url( $to, PHP_URL_PATH );
+    $url_to  = $to_path ? $to_path : $to;
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'rank_math_redirections';
+    // idempotenta: cauta un redirect activ cu acelasi pattern exact (evita dublarea la re-apply)
+    $like = '%' . $wpdb->esc_like( $pattern ) . '%';
+    $rows = $wpdb->get_results( $wpdb->prepare( "SELECT id, sources FROM {$table} WHERE status = 'active' AND sources LIKE %s LIMIT 50", $like ) );
+    foreach ( (array) $rows as $row ) {
+        $srcs = maybe_unserialize( $row->sources );
+        if ( is_array( $srcs ) ) {
+            foreach ( $srcs as $s ) {
+                if ( isset( $s['pattern'] ) && trim( (string) $s['pattern'], '/' ) === $pattern ) {
+                    return [ 'created' => false, 'existing_id' => (int) $row->id, 'pattern' => $pattern, 'reason' => 'redirect activ exista deja pentru acest pattern' ];
+                }
+            }
+        }
+    }
+
+    $id = \RankMath\Redirections\DB::add( [
+        'sources'     => [ [ 'pattern' => $pattern, 'comparison' => 'exact' ] ],
+        'url_to'      => $url_to,
+        'header_code' => (string) $code,
+        'status'      => 'active',
+    ] );
+    if ( ! $id ) {
+        return new WP_Error( 'insert_failed', 'RankMath DB::add a esuat', [ 'status' => 500 ] );
+    }
+    if ( class_exists( '\RankMath\Redirections\Cache' ) && method_exists( '\RankMath\Redirections\Cache', 'purge' ) ) {
+        \RankMath\Redirections\Cache::purge( (int) $id );
+    }
+    return [ 'created' => true, 'id' => (int) $id, 'pattern' => $pattern, 'url_to' => $url_to, 'header_code' => $code ];
+}
 
 // ── 3. ARTICLE MODIFICATION TRACKER ─────────────────────────────────────────
 // Captureaza save_post pe articole published si trimite webhook la n8n.
@@ -326,7 +392,7 @@ function sfbtk_settings_page() {
                         <label>
                             <input type="checkbox" name="sfbtk_nonce_enabled" value="1"
                                 <?php checked( 1, get_option( 'sfbtk_nonce_enabled', 1 ) ); ?> />
-                            Activat — endpoints <code>/masterc/v1/nonce</code>, <code>/masterc/v1/nonce-test</code>, <code>/masterc/v1/option</code>, <code>/masterc/v1/options-list</code>
+                            Activat — endpoints <code>/masterc/v1/nonce</code>, <code>/masterc/v1/nonce-test</code>, <code>/masterc/v1/option</code>, <code>/masterc/v1/options-list</code>, <code>/masterc/v1/write-lang-file</code>, <code>/masterc/v1/rankmath-redirect</code>
                         </label>
                     </td>
                 </tr>
