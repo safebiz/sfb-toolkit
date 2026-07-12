@@ -21,7 +21,6 @@ class SFB_GitHub_Updater {
     private $github_repo;
     private $access_token;
     private $plugin_data;
-    private $github_response;
     private $cache_key;
     private $cache_seconds = 21600; // 6 ore
 

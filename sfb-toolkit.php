@@ -3,16 +3,27 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.5.8
+ * Version:     1.5.9
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ * Update URI:  https://github.com/safebiz/sfb-toolkit
+ * Text Domain: sfb-toolkit
  * Requires PHP: 7.4
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.5.9 (2026-07-12) — NOU masterc/v1/performance (P1.6, read-only): autoload bloat,
+ *         object cache, transients, cron health, DB (revisions/orphan meta/tabele), env flags
+ *         (metodologie: skill oficial wp-performance). + REST hardening (P0.3, audit wp-rest-api):
+ *         args schema pe rutele masterc/v1 (/option, /options-list, /write-lang-file) cu
+ *         validate/sanitize declarativ; fix /options-list $_GET[prefix] → $request->get_param();
+ *         headers License URI/Update URI/Text Domain; date() → gmdate(). + fix-uri PHPStan level 5
+ *         (autoload bool ×3, proprietate nefolosită) — gate nou pre-deploy: devtools/phpstan-wp.
+ *         (Notă: hardening-ul a purtat local eticheta 1.5.8 câteva ore, doar pe safehost — pliat aici.)
  *   1.5.8 (2026-06-10) — New /masterc/v1/rankmath-redirect endpoint: insert deterministic 301
- *                        redirect in wp_rank_math_redirections via RankMath\Redirections\DB::add
+ *                        redirect in wp_rank_math_redirections via RankMathRedirectionsDB::add
  *                        (corect serializare sources + 301 servit imediat, validat live monitorstup).
  *                        Idempotent (nu dublează pattern exact). Paritate F6 cu SureRank /redirection
  *                        pentru cele ~17/21 site-uri RankMath fără SSH. Tool: fix-404-redirect.js.
@@ -57,6 +68,7 @@ require_once __DIR__ . '/includes/class-sfb-github-updater.php';
 require_once __DIR__ . '/includes/class-sfb-hmac.php';
 require_once __DIR__ . '/includes/class-sfb-inventory.php';
 require_once __DIR__ . '/includes/class-sfb-hardening.php';
+require_once __DIR__ . '/includes/class-sfb-performance.php';
 new SFB_Hardening();
 new SFB_GitHub_Updater( [
     'plugin_file'  => __FILE__,
@@ -98,7 +110,7 @@ function sfbtk_verify_theme_file( $filename ) {
         'file'     => $filename,
         'hash'     => hash_file( 'sha256', $file ),
         'size'     => filesize( $file ),
-        'modified' => date( 'Y-m-d H:i:s', filemtime( $file ) ),
+        'modified' => gmdate( 'Y-m-d H:i:s', filemtime( $file ) ),
     ];
 }
 
@@ -155,13 +167,26 @@ add_action( 'rest_api_init', function () {
             return [ 'name' => $name, 'value' => get_option( $name, '__NOT_FOUND__' ) ];
         },
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
+        'args'                => [
+            'name'  => [
+                'description'       => 'Option name — whitelist: sure*_ / litespeed.conf.* / whl_page',
+                'type'              => 'string',
+                'required'          => true,
+                'sanitize_callback' => 'sanitize_text_field',
+                'validate_callback' => fn( $v ) => is_string( $v ) && (bool) preg_match( '/^(surecookie|suremembers|suredash|surerank)_|^litespeed\.conf\.|^whl_page$/', $v ),
+            ],
+            'value' => [
+                'description' => 'POST only: option value (JSON object sau string; string-urile JSON se decodează în callback)',
+                'required'    => false,
+            ],
+        ],
     ] );
 
     register_rest_route( 'masterc/v1', '/options-list', [
         'methods'             => 'GET',
-        'callback'            => function () {
+        'callback'            => function ( $request ) {
             global $wpdb;
-            $prefix = sanitize_text_field( $_GET['prefix'] ?? 'surecookie' );
+            $prefix = $request->get_param( 'prefix' );
             if ( ! in_array( $prefix, [ 'surecookie', 'suremembers', 'suredash', 'surerank' ], true ) ) {
                 return new WP_Error( 'invalid_prefix', 'Only sure* prefixes allowed', [ 'status' => 400 ] );
             }
@@ -174,6 +199,15 @@ add_action( 'rest_api_init', function () {
             return array_map( fn( $r ) => $r->option_name, $results );
         },
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
+        'args'                => [
+            'prefix' => [
+                'description'       => 'Prefix opțiuni (enum)',
+                'type'              => 'string',
+                'default'           => 'surecookie',
+                'enum'              => [ 'surecookie', 'suremembers', 'suredash', 'surerank' ],
+                'sanitize_callback' => 'sanitize_text_field',
+            ],
+        ],
     ] );
 
     // Write a translation DATA file (.po/.mo/.json) into wp-content/languages/{plugins,themes}/.
@@ -234,6 +268,27 @@ add_action( 'rest_api_init', function () {
             return [ 'written' => true, 'path' => str_replace( ABSPATH, '', $path ), 'bytes' => $bytes ];
         },
         'permission_callback' => fn() => current_user_can( 'manage_options' ),
+        'args'                => [
+            'filename'       => [
+                'description'       => 'Nume fișier traducere: {textdomain}-{locale}[-{md5}].{po|mo|json}',
+                'type'              => 'string',
+                'required'          => true,
+                'sanitize_callback' => 'sanitize_file_name',
+                'validate_callback' => fn( $v ) => is_string( $v ) && (bool) preg_match( '/^[a-z0-9_-]+-[a-z]{2,3}_[A-Z]{2}(-[a-f0-9]{32})?\.(po|mo|json)$/', $v ),
+            ],
+            'type'           => [
+                'description' => 'Destinație în WP_LANG_DIR',
+                'type'        => 'string',
+                'required'    => true,
+                'enum'        => [ 'plugins', 'themes' ],
+            ],
+            'content_base64' => [
+                'description'       => 'Conținut fișier, base64 (max 5MB decodat — verificat în callback)',
+                'type'              => 'string',
+                'required'          => true,
+                'validate_callback' => fn( $v ) => is_string( $v ) && '' !== $v,
+            ],
+        ],
     ] );
 
     // RankMath redirect insert — paritate F6 cu SureRank /redirection (RankMath n-are REST pt redirect arbitrar).

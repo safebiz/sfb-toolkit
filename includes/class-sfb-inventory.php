@@ -109,7 +109,7 @@ class SFB_Inventory {
             if ( ! class_exists( 'SFB_HMAC' ) ) {
                 require_once __DIR__ . '/class-sfb-hmac.php';
             }
-            add_option( self::SECRET_OPTION, SFB_HMAC::generate_secret(), '', 'no' );
+            add_option( self::SECRET_OPTION, SFB_HMAC::generate_secret(), '', false );
         }
     }
 
@@ -223,7 +223,7 @@ class SFB_Inventory {
             require_once __DIR__ . '/class-sfb-hmac.php';
         }
         $new = SFB_HMAC::generate_secret();
-        update_option( self::SECRET_OPTION, $new, 'no' );
+        update_option( self::SECRET_OPTION, $new, false );
         return [ 'rotated' => true, 'secret' => $new ];
     }
 
@@ -387,7 +387,7 @@ class SFB_Inventory {
         array_unshift( $log, $entry );
         $log = array_slice( $log, 0, self::AUDIT_MAX_ENTRIES );
 
-        update_option( self::AUDIT_OPTION, $log, 'no' );
+        update_option( self::AUDIT_OPTION, $log, false );
     }
 
     protected static function client_ip() {
