@@ -304,6 +304,14 @@ class SFB_URL_Bases {
 		if ( is_404() || ! isset( $_SERVER['REQUEST_URI'] ) ) {
 			return;
 		}
+
+		// 🔴 NU redirecta sub-rutele. Permalinkul canonic (get_permalink / get_term_link) NU conține
+		// sufixul, deci o comparație directă l-ar considera „URL greșit" și ar redirecta — omorând
+		// feed-ul, embed-ul sau pagina N. Regresie prinsă la test pe staging 2026-08-11:
+		// `/saci-big-bags/feed/` răspundea 200 pe producție și 301 spre categorie cu modulul activ.
+		if ( is_feed() || is_embed() || is_trackback() || is_paged() || get_query_var( 'cpage' ) ) {
+			return;
+		}
 		$target = '';
 		if ( $this->enabled( 'product_base' ) && function_exists( 'is_product' ) && is_product() ) {
 			$target = get_permalink();
