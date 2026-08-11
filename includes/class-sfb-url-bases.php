@@ -182,6 +182,16 @@ class SFB_URL_Bases {
 			return $request;
 		}
 
+		// 🔴 Rutare DOAR de la rădăcină. Fără asta, `array_pop` lua ultimul segment din ORICE cale,
+		// deci `/orice/prefix/slug-produs/` devenea produsul — furând adresa unei pagini copil, a
+		// unui articol sau a oricărei rute legitime care se termină cu acel slug.
+		// Excepție: calea cu baza de produs configurată (`/produs/slug/`), care TREBUIE rezolvată
+		// ca să putem emite 301 spre adresa curată.
+		$base = trim( str_replace( '%product_cat%', '', $this->product_base() ), '/' );
+		if ( ! empty( $parts ) && ! ( 1 === count( $parts ) && '' !== $base && $parts[0] === $base ) ) {
+			return $request;
+		}
+
 		$found = $wpdb->get_var( $wpdb->prepare(
 			"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = 'product' AND post_status IN ('publish','private') LIMIT 1",
 			$slug
@@ -327,13 +337,29 @@ class SFB_URL_Bases {
 			return;
 		}
 
-		$current = strtok( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ), '?' );
-		if ( untrailingslashit( wp_parse_url( $target, PHP_URL_PATH ) ) === untrailingslashit( $current ) ) {
+		// 🔴 NU folosi sanitize_text_field() pe REQUEST_URI: `_sanitize_text_fields()` ȘTERGE
+		// secvențele procent-encodate (`preg_replace('/%[a-f0-9]{2}/i','')`). Pe un slug non-ASCII
+		// (ex. „…-200-m²" = `%c2%b2`) calea curentă ieșea trunchiată, nu se potrivea niciodată cu
+		// permalinkul și rezulta o BUCLĂ INFINITĂ de 301 — pagina devenea inaccesibilă.
+		// Prins pe staging la contra-verificarea Codex, 2026-08-11.
+		$request_uri  = wp_unslash( $_SERVER['REQUEST_URI'] );
+		$current_path = (string) wp_parse_url( $request_uri, PHP_URL_PATH );
+		$target_path  = (string) wp_parse_url( $target, PHP_URL_PATH );
+
+		// Comparăm decodat, ca `%c2%b2` și „²" să fie considerate aceeași cale.
+		if ( untrailingslashit( rawurldecode( $current_path ) ) === untrailingslashit( rawurldecode( $target_path ) ) ) {
 			return; // deja pe adresa corectă
 		}
 
-		$query = wp_parse_url( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ), PHP_URL_QUERY );
-		wp_safe_redirect( $target . ( $query ? '?' . $query : '' ), 301 );
+		$query    = wp_parse_url( $request_uri, PHP_URL_QUERY );
+		$redirect = $target . ( $query ? '?' . $query : '' );
+
+		// Plasă de siguranță: nicio redirectare către exact aceeași adresă.
+		if ( untrailingslashit( rawurldecode( (string) wp_parse_url( $redirect, PHP_URL_PATH ) ) ) === untrailingslashit( rawurldecode( $current_path ) ) ) {
+			return;
+		}
+
+		wp_safe_redirect( $redirect, 301 );
 		exit;
 	}
 
@@ -346,20 +372,34 @@ class SFB_URL_Bases {
 	 */
 	public static function collisions() {
 		global $wpdb;
-		if ( ! function_exists( 'wc_get_permalink_structure' ) ) {
-			return [];
+
+		$sets = [];
+		foreach ( [ 'product_cat', 'category' ] as $tax ) {
+			if ( ! taxonomy_exists( $tax ) ) continue;
+			$terms = get_terms( [ 'taxonomy' => $tax, 'hide_empty' => false, 'fields' => 'slugs' ] );
+			if ( ! is_wp_error( $terms ) && $terms ) $sets[ $tax ] = $terms;
 		}
-		$terms = get_terms( [ 'taxonomy' => 'product_cat', 'hide_empty' => false ] );
-		if ( is_wp_error( $terms ) || ! $terms ) {
-			return [];
+		foreach ( [ 'product', 'page', 'post' ] as $pt ) {
+			if ( ! post_type_exists( $pt ) ) continue;
+			$rows = $wpdb->get_col( $wpdb->prepare(
+				"SELECT post_name FROM {$wpdb->posts} WHERE post_type = %s AND post_status IN ('publish','private') AND post_name <> ''",
+				$pt
+			) );
+			if ( $rows ) $sets[ $pt ] = $rows;
 		}
-		$slugs = wp_list_pluck( $terms, 'slug' );
-		$in    = implode( ',', array_fill( 0, count( $slugs ), '%s' ) );
-		$rows  = $wpdb->get_col( $wpdb->prepare(
-			"SELECT post_name FROM {$wpdb->posts} WHERE post_type='product' AND post_status IN ('publish','private') AND post_name IN ($in)",
-			$slugs
-		) );
-		return $rows ? array_values( array_unique( $rows ) ) : [];
+
+		// Toate perechile de tipuri care ar ajunge la aceeași adresă cu bazele scoase.
+		$out  = [];
+		$keys = array_keys( $sets );
+		for ( $i = 0; $i < count( $keys ); $i++ ) {
+			for ( $j = $i + 1; $j < count( $keys ); $j++ ) {
+				$common = array_intersect( $sets[ $keys[ $i ] ], $sets[ $keys[ $j ] ] );
+				foreach ( $common as $slug ) {
+					$out[] = sprintf( '%s (%s ↔ %s)', $slug, $keys[ $i ], $keys[ $j ] );
+				}
+			}
+		}
+		return array_values( array_unique( $out ) );
 	}
 
 	/**

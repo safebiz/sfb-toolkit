@@ -454,8 +454,14 @@ add_action( 'admin_init', function () {
     register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_inventory_enabled',       [ 'type' => 'boolean', 'default' => 1 ] );
     // Bazele de URL — TOATE oprite implicit: activarea schimbă adrese publice.
+    // 🔴 GRUP SEPARAT, obligatoriu. `wp-admin/options.php` parcurge TOATE opțiunile grupului
+    // salvat și scrie `null` peste cele absente din POST (core, options.php:337-345). Cu două
+    // formulare pe aceeași pagină și un singur grup, salvarea formularului de sus ar fi OPRIT
+    // tăcut cele 4 bife de URL — adică tot catalogul ar fi revenit la adresele cu bază — iar
+    // salvarea formularului de jos ar fi oprit File Verify / Nonce / Tracker / Inventory.
+    // Semnalat de contra-verificarea Codex, confirmat pe sursa WordPress, 2026-08-11.
     foreach ( SFB_URL_Bases::options() as $opt ) {
-        register_setting( 'sfbtk_options', $opt, [ 'type' => 'boolean', 'default' => 0 ] );
+        register_setting( 'sfbtk_url_options', $opt, [ 'type' => 'boolean', 'default' => 0 ] );
     }
 } );
 
@@ -568,7 +574,7 @@ function sfbtk_settings_page() {
         <?php endif; ?>
 
         <form method="post" action="options.php">
-            <?php settings_fields( 'sfbtk_options' ); ?>
+            <?php settings_fields( 'sfbtk_url_options' ); // grup SEPARAT — vezi nota de la register_setting ?>
             <table class="form-table">
                 <?php
                 $sfbtk_url_labels = [
