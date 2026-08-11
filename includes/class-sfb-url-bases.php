@@ -192,10 +192,20 @@ class SFB_URL_Bases {
 			return $request;
 		}
 
-		$found = $wpdb->get_var( $wpdb->prepare(
-			"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = 'product' AND post_status IN ('publish','private') LIMIT 1",
-			$slug
-		) );
+		// Vizitatorul anonim rezolvă DOAR produse publicate. Produsele `private` se rezolvă numai
+		// pentru cine are dreptul să le vadă — altfel am confirma prin comportamentul rutării că
+		// un slug privat există. (Recomandare din contra-verificarea Codex, 2026-08-11.)
+		if ( current_user_can( 'read_private_posts' ) ) {
+			$found = $wpdb->get_var( $wpdb->prepare(
+				"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = 'product' AND post_status IN ('publish','private') LIMIT 1",
+				$slug
+			) );
+		} else {
+			$found = $wpdb->get_var( $wpdb->prepare(
+				"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = 'product' AND post_status = 'publish' LIMIT 1",
+				$slug
+			) );
+		}
 		if ( ! $found ) {
 			return $request;
 		}
