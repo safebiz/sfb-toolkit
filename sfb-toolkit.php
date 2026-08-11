@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.5.9
+ * Version:     1.6.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -14,6 +14,11 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.6.0 (2026-08-11) — NOU modul URL Bases (paritate Rank Math la migrarea spre SureRank):
+ *         4 bife (baza produsului / baza categoriei de produs / slug-uri parinte / baza categoriei
+ *         de blog), router la radacina pentru produse, reguli de rescriere per termen, 301 vechi-nou.
+ *         Toate OPRITE implicit. Raporteaza coliziunile slug produs-categorie in pagina de setari.
+ *         Motiv: SureRank nu are echivalent pentru baza produsului si slug-urile parinte.
  *   1.5.9 (2026-07-12) — NOU masterc/v1/performance (P1.6, read-only): autoload bloat,
  *         object cache, transients, cron health, DB (revisions/orphan meta/tabele), env flags
  *         (metodologie: skill oficial wp-performance). + REST hardening (P0.3, audit wp-rest-api):
@@ -69,7 +74,33 @@ require_once __DIR__ . '/includes/class-sfb-hmac.php';
 require_once __DIR__ . '/includes/class-sfb-inventory.php';
 require_once __DIR__ . '/includes/class-sfb-hardening.php';
 require_once __DIR__ . '/includes/class-sfb-performance.php';
+require_once __DIR__ . '/includes/class-sfb-url-bases.php';
 new SFB_Hardening();
+// Trebuie instanțiat devreme: se agață de `request` și `rewrite_rules_array`.
+new SFB_URL_Bases();
+
+// Regenerează regulile de rescriere când se schimbă vreo bifă de bază URL.
+foreach ( SFB_URL_Bases::options() as $sfbtk_url_opt ) {
+    add_action( "update_option_{$sfbtk_url_opt}", function () {
+        add_action( 'shutdown', function () { flush_rewrite_rules( false ); } );
+    } );
+    add_action( "add_option_{$sfbtk_url_opt}", function () {
+        add_action( 'shutdown', function () { flush_rewrite_rules( false ); } );
+    } );
+}
+unset( $sfbtk_url_opt );
+
+// Activare/dezactivare: DOAR regenerăm regulile de rescriere.
+// ⚠️ NU reseta bifele la dezactivare. Pe un magazin care depinde de modul, o dezactivare
+// temporară (debug, conflict de plugin) urmată de reactivare ar lăsa bifele OPRITE și ar
+// schimba tăcut adresa fiecărui produs. Bifele sunt starea dorită de administrator și
+// trebuie să supraviețuiască ciclului activ/inactiv; regulile se regenerează singure.
+register_activation_hook( __FILE__, function () {
+    flush_rewrite_rules( false );
+} );
+register_deactivation_hook( __FILE__, function () {
+    flush_rewrite_rules( false );
+} );
 new SFB_GitHub_Updater( [
     'plugin_file'  => __FILE__,
     'github_repo'  => 'safebiz/sfb-toolkit',
@@ -422,6 +453,10 @@ add_action( 'admin_init', function () {
     register_setting( 'sfbtk_options', 'sfbtk_tracker_client_id',       [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_inventory_enabled',       [ 'type' => 'boolean', 'default' => 1 ] );
+    // Bazele de URL — TOATE oprite implicit: activarea schimbă adrese publice.
+    foreach ( SFB_URL_Bases::options() as $opt ) {
+        register_setting( 'sfbtk_options', $opt, [ 'type' => 'boolean', 'default' => 0 ] );
+    }
 } );
 
 function sfbtk_settings_page() {
@@ -489,6 +524,90 @@ function sfbtk_settings_page() {
                 </tr>
             </table>
             <?php submit_button(); ?>
+        </form>
+
+        <hr />
+        <h2>Structura URL — paritate Rank Math</h2>
+        <p class="description">
+            Scoate bazele din adresele publice, așa cum făcea Rank Math. Necesar la migrarea către
+            SureRank, care <strong>nu are echivalent</strong> pentru baza produsului și pentru slug-urile părinte.
+            <strong>Activarea schimbă adrese publice</strong> — bifează doar ce era pornit înainte în Rank Math.
+            Nu combina cu filtrele <code>surerank_remove_*_base</code>, s-ar aplica de două ori.
+        </p>
+
+        <?php
+        $sfbtk_foreign = SFB_URL_Bases::foreign_handlers();
+        if ( $sfbtk_foreign ) : ?>
+            <div class="notice notice-error inline" style="margin:12px 0;padding:10px 12px;">
+                <p style="margin:0 0 6px;"><strong>⛔ Alt mecanism scoate deja bazele pe acest site — NU bifa</strong></p>
+                <p style="margin:0 0 6px;">
+                    Adresele sunt deja curate fără ca modulul să fie pornit, deci altcineva face treaba:
+                    un router din tema copil, alt plugin SEO, sau filtrele <code>surerank_remove_*_base</code>.
+                    Bifarea ar aplica mecanismul <strong>de două ori</strong>. Întâi scoate mecanismul vechi, apoi bifează.
+                </p>
+                <ul style="margin:0;list-style:disc inside;">
+                    <?php foreach ( $sfbtk_foreign as $sfbtk_msg ) : ?>
+                        <li><?php echo esc_html( $sfbtk_msg ); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php endif; ?>
+
+        <?php
+        $sfbtk_collisions = SFB_URL_Bases::collisions();
+        if ( $sfbtk_collisions ) : ?>
+            <div class="notice notice-warning inline" style="margin:12px 0;padding:10px 12px;">
+                <p style="margin:0 0 6px;"><strong>⚠️ Coliziuni de slug produs ↔ categorie (<?php echo count( $sfbtk_collisions ); ?>)</strong></p>
+                <p style="margin:0 0 6px;">
+                    Cu baza produsului scoasă, <strong>produsul câștigă adresa</strong> (identic cu Rank Math),
+                    iar categoria cu același nume devine inaccesibilă. Nu e un defect al modulului — e o
+                    problemă de conținut. Remediu: redenumește slug-ul categoriei, cu redirect.
+                </p>
+                <p style="margin:0;"><code><?php echo esc_html( implode( '</code>, <code>', $sfbtk_collisions ) ); ?></code></p>
+            </div>
+        <?php endif; ?>
+
+        <form method="post" action="options.php">
+            <?php settings_fields( 'sfbtk_options' ); ?>
+            <table class="form-table">
+                <?php
+                $sfbtk_url_labels = [
+                    'product_base'     => [ 'Scoate baza produsului', 'Rank Math: <em>Remove product base</em> — <code>/produs/nume/</code> → <code>/nume/</code>. Include un router la rădăcină și 301 de pe adresa veche. Cere WooCommerce.' ],
+                    'product_cat_base' => [ 'Scoate baza categoriei de produs', 'Rank Math: <em>Remove category base</em> — <code>/product-category/nume/</code> → <code>/nume/</code>. Cere WooCommerce.' ],
+                    'parent_slugs'     => [ 'Scoate slug-urile părinte', 'Rank Math: <em>Remove parent slugs</em> — <code>/parinte/copil/</code> → <code>/copil/</code>. Se aplică la categoriile de produs.' ],
+                    'category_base'    => [ 'Scoate baza categoriei de blog', 'Rank Math: <em>Strip category base</em> — <code>/category/nume/</code> → <code>/nume/</code>.' ],
+                ];
+                foreach ( SFB_URL_Bases::options() as $sfbtk_key => $sfbtk_opt ) :
+                    list( $sfbtk_title, $sfbtk_desc ) = $sfbtk_url_labels[ $sfbtk_key ];
+                    ?>
+                    <tr>
+                        <th><?php echo esc_html( $sfbtk_title ); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="<?php echo esc_attr( $sfbtk_opt ); ?>" value="1"
+                                    <?php checked( 1, get_option( $sfbtk_opt, 0 ) ); ?> />
+                                Activat
+                            </label>
+                            <p class="description"><?php echo wp_kses_post( $sfbtk_desc ); ?></p>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                <tr>
+                    <th>Adrese acum</th>
+                    <td>
+                        <table class="widefat striped" style="max-width:640px;">
+                            <?php foreach ( SFB_URL_Bases::sample_urls() as $sfbtk_label => $sfbtk_url ) : ?>
+                                <tr>
+                                    <td style="width:180px;"><?php echo esc_html( $sfbtk_label ); ?></td>
+                                    <td><code><?php echo esc_html( $sfbtk_url ); ?></code></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </table>
+                        <p class="description">Eșantion live. Salvează și reîncarcă pagina ca să vezi efectul bifelor.</p>
+                    </td>
+                </tr>
+            </table>
+            <?php submit_button( 'Salvează structura URL' ); ?>
         </form>
     </div>
     <?php
