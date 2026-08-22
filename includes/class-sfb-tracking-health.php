@@ -32,7 +32,7 @@
  * `define( 'SFB_TRACKING_HEALTH_DISABLE', true );` în wp-config.php.
  *
  * @package sfb-toolkit
- * @since   1.8.0 (implicit OPRIT din 1.8.1; 1.8.2: + POST prin formular/iframe — fbevents trimite Purchase așa — + casetă și coloană în admin)
+ * @since   1.8.0 (implicit OPRIT din 1.8.1; 1.8.2: + POST prin formular/iframe + casetă și coloană în admin; 1.8.3: consimțământul din primul raport)
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -93,7 +93,8 @@ class SFB_Tracking_Health {
 		$l = $h['last'] ?? []; $v = $h['verdict'] ?? [];
 		$mx = function ( $k ) use ( $h ) { $m = 0; foreach ( ( $h['reports'] ?? [] ) as $r ) $m = max( $m, (int) ( $r[ $k ] ?? 0 ) ); return $m; };
 		$any = function ( $k ) use ( $h ) { foreach ( ( $h['reports'] ?? [] ) as $r ) if ( ! empty( $r[ $k ] ) ) return true; return false; };
-		$c = $l['consent'] ?? [];
+		// consimțământul = din PRIMUL raport (momentul cumpărării); reîncărcările ulterioare (admin, noi) nu-l rescriu
+		$c = ( $h['reports'][0]['consent'] ?? null ) ?: ( $l['consent'] ?? [] );
 		if ( isset( $c['moove'] ) ) $cons = ( (int) ( $c['moove']['thirdparty'] ?? 0 ) === 1 ) ? 'acceptate' : ( ( (int) ( $c['moove']['advanced'] ?? 0 ) === 1 ) ? 'parțial (publicitate da, terți nu)' : 'REFUZATE' );
 		elseif ( isset( $c['wp_consent_api']['marketing'] ) ) $cons = $c['wp_consent_api']['marketing'] ? 'acceptate' : 'REFUZATE';
 		else $cons = 'necunoscut';
