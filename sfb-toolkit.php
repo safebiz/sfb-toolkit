@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.7.6
+ * Version:     1.8.0
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -14,6 +14,18 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.8.0 (2026-08-22) — NOU modul Tracking Health (includes/class-sfb-tracking-health.php): marcaj
+ *         tehnic pe fiecare comandă, scris din browserul cumpărătorului pe pagina de mulțumire —
+ *         GTM încărcat? `purchase` în dataLayer? a plecat cererea către GA4 (/g/collect en=purchase)?
+ *         pixelul Meta (/tr ev=Purchase)? releul PYS? Gateway-ul on.aws? ce a ales la cookie-uri?
+ *         + numărătoarea randărilor în PHP (independentă de JS). Motiv: pe special-plus, 18–21 aug,
+ *         marcajele PYS/GTM Kit erau „1" pe comenzi pe care Google/Meta nu le primiseră niciodată —
+ *         ele spun că PHP-ul a construit evenimentul, nu că a plecat. Observator în <head> (prio 0,
+ *         înfășoară sendBeacon/fetch/XHR — GA4 trimite prin sendBeacon, invizibil în Resource Timing),
+ *         raport la T+3s/T+8s/pagehide pe POST /sfb/v1/tracking-health, autorizat cu HMAC din cheia
+ *         comenzii. Meta `_sfb_tracking_health` (JSON, doar bool/int) + `_sfb_th_renders`.
+ *         Citit de wat/tools/purchase-truth.js ⇒ verdict „dovedit" în loc de „probabil". Bifă:
+ *         `sfbtk_tracking_health_enabled` (implicit PORNIT); oprire: SFB_TRACKING_HEALTH_DISABLE.
  *   1.7.5 (2026-08-19) — NOU masterc/v1/wpml-set-terms: pune categoriile pe o traducere, in
  *         perechea de termen din limba postului. Motiv: WPML REMAPEAZA id-urile de termen dupa
  *         limba contextului, la citire SI la scriere (incident 18 aug: scrisul lui 120 a produs
@@ -118,6 +130,7 @@ require_once __DIR__ . '/includes/class-sfb-hardening.php';
 require_once __DIR__ . '/includes/class-sfb-performance.php';
 require_once __DIR__ . '/includes/class-sfb-url-bases.php';
 require_once __DIR__ . '/includes/class-sfb-order-received-alias.php';
+require_once __DIR__ . '/includes/class-sfb-tracking-health.php';
 new SFB_Hardening();
 // Trebuie instanțiat devreme: se agață de `request` și `rewrite_rules_array`.
 new SFB_URL_Bases();
@@ -125,6 +138,9 @@ new SFB_URL_Bases();
 // Punte peste gateway-urile care hardcodează endpointul englez `order-received`
 // (ex. Fusion Pay TBI v3.0). No-op pe site-urile cu endpoint netradus.
 new SFB_Order_Received_Alias();
+
+// Marcaj tehnic pe comandă: ce a plecat efectiv din browser pe pagina de mulțumire (v1.8.0).
+new SFB_Tracking_Health();
 
 // Regenerează regulile de rescriere când se schimbă vreo bifă de bază URL.
 foreach ( SFB_URL_Bases::options() as $sfbtk_url_opt ) {
@@ -1158,6 +1174,7 @@ add_action( 'admin_init', function () {
     register_setting( 'sfbtk_options', 'sfbtk_tracker_client_id',       [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_tracker_n8n_url',         [ 'type' => 'string',  'default' => '' ] );
     register_setting( 'sfbtk_options', 'sfbtk_inventory_enabled',       [ 'type' => 'boolean', 'default' => 1 ] );
+    register_setting( 'sfbtk_options', 'sfbtk_tracking_health_enabled', [ 'type' => 'boolean', 'default' => 1 ] );
     // Bazele de URL — TOATE oprite implicit: activarea schimbă adrese publice.
     // 🔴 GRUP SEPARAT, obligatoriu. `wp-admin/options.php` parcurge TOATE opțiunile grupului
     // salvat și scrie `null` peste cele absente din POST (core, options.php:337-345). Cu două
@@ -1214,6 +1231,16 @@ function sfbtk_settings_page() {
                             <input type="checkbox" name="sfbtk_inventory_enabled" value="1"
                                 <?php checked( 1, get_option( 'sfbtk_inventory_enabled', 1 ) ); ?> />
                             Activat — endpoint HMAC-protejat <code>/sfb/v1/inventory</code> pentru change-tracking pipeline (plugins, files, options)
+                        </label>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Tracking Health (marcaj pe comandă)</th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="sfbtk_tracking_health_enabled" value="1"
+                                <?php checked( 1, get_option( 'sfbtk_tracking_health_enabled', 1 ) ); ?> />
+                            Activat — pe pagina de mulțumire WooCommerce scrie pe comandă (<code>_sfb_tracking_health</code>) ce a plecat efectiv din browser: GTM/GA4, pixel Meta, releu PYS, consimțământ. Doar da/nu și numărători, nimic către terți.
                         </label>
                     </td>
                 </tr>
