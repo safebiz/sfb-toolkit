@@ -32,7 +32,7 @@
  * `define( 'SFB_TRACKING_HEALTH_DISABLE', true );` în wp-config.php.
  *
  * @package sfb-toolkit
- * @since   1.8.0 (implicit OPRIT din 1.8.1)
+ * @since   1.8.0 (implicit OPRIT din 1.8.1; 1.8.2: + POST prin formular/iframe — fbevents trimite Purchase așa — + casetă și coloană în admin)
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -51,6 +51,72 @@ class SFB_Tracking_Health {
 		add_action( 'woocommerce_thankyou', [ $this, 'count_render' ], 1 );
 		add_action( 'wp_footer', [ $this, 'footer_reporter' ], 99 );
 		add_action( 'rest_api_init', [ $this, 'routes' ] );
+		add_action( 'add_meta_boxes', [ $this, 'metabox' ] );
+		add_filter( 'manage_woocommerce_page_wc-orders_columns', [ $this, 'column' ], 30 );
+		add_filter( 'manage_edit-shop_order_columns', [ $this, 'column' ], 30 );
+		add_action( 'manage_woocommerce_page_wc-orders_custom_column', [ $this, 'column_value' ], 10, 2 );
+		add_action( 'manage_shop_order_posts_custom_column', [ $this, 'column_value' ], 10, 2 );
+	}
+
+	// ── 5. afișare în admin: casetă pe comandă + coloană în listă ───────────────────────
+	public function metabox() {
+		// wc_get_page_screen_id știe singur dacă magazinul e pe HPOS sau pe tabela clasică
+		$screen = function_exists( 'wc_get_page_screen_id' ) ? wc_get_page_screen_id( 'shop-order' ) : 'shop_order';
+		add_meta_box( 'sfb-tracking-health', 'Măsurare (marcaj tehnic Safebiz)', [ $this, 'render_metabox' ], $screen, 'side', 'default' );
+	}
+
+	public function render_metabox( $post_or_order ) {
+		$order = ( $post_or_order instanceof WC_Order ) ? $post_or_order : wc_get_order( is_object( $post_or_order ) ? $post_or_order->ID : $post_or_order );
+		if ( ! $order ) return;
+		echo $this->summary_html( $order, false ); // phpcs:ignore WordPress.Security.EscapeOutput -- construit cu esc_html mai jos
+	}
+
+	public function column( $cols ) {
+		$out = [];
+		foreach ( $cols as $k => $v ) { $out[ $k ] = $v; if ( 'order_status' === $k ) $out['sfb_th'] = 'Măsurare'; }
+		if ( ! isset( $out['sfb_th'] ) ) $out['sfb_th'] = 'Măsurare';
+		return $out;
+	}
+
+	public function column_value( $col, $order_or_id ) {
+		if ( 'sfb_th' !== $col ) return;
+		$order = ( $order_or_id instanceof WC_Order ) ? $order_or_id : wc_get_order( $order_or_id );
+		if ( $order ) echo $this->summary_html( $order, true ); // phpcs:ignore WordPress.Security.EscapeOutput
+	}
+
+	/** Rezumat în română. $short = o linie pentru lista de comenzi. */
+	public function summary_html( $order, $short ) {
+		$renders = (int) $order->get_meta( self::META_RENDERS );
+		$h = json_decode( (string) $order->get_meta( self::META_KEY ), true );
+		if ( ! $h && ! $renders ) return $short ? '<span style="color:#999">—</span>' : '<p style="color:#666">Nicio informație — comandă dinaintea modulului sau pagina de confirmare nu a fost afișată.</p>';
+		if ( ! $h ) return $short ? '<span style="color:#c0453b">❌ pagina afișată, niciun script nu a rulat</span>' : '<p><strong>❌ Pagina de confirmare s-a afișat de ' . esc_html( $renders ) . ' ori, dar din browser nu a venit niciun raport</strong> — browserul nu a rulat niciun script de-al nostru (blocant total / JavaScript oprit).</p>';
+		$l = $h['last'] ?? []; $v = $h['verdict'] ?? [];
+		$mx = function ( $k ) use ( $h ) { $m = 0; foreach ( ( $h['reports'] ?? [] ) as $r ) $m = max( $m, (int) ( $r[ $k ] ?? 0 ) ); return $m; };
+		$any = function ( $k ) use ( $h ) { foreach ( ( $h['reports'] ?? [] ) as $r ) if ( ! empty( $r[ $k ] ) ) return true; return false; };
+		$c = $l['consent'] ?? [];
+		if ( isset( $c['moove'] ) ) $cons = ( (int) ( $c['moove']['thirdparty'] ?? 0 ) === 1 ) ? 'acceptate' : ( ( (int) ( $c['moove']['advanced'] ?? 0 ) === 1 ) ? 'parțial (publicitate da, terți nu)' : 'REFUZATE' );
+		elseif ( isset( $c['wp_consent_api']['marketing'] ) ) $cons = $c['wp_consent_api']['marketing'] ? 'acceptate' : 'REFUZATE';
+		else $cons = 'necunoscut';
+		$g_ok = $mx( 'ga_purchase' ) > 0; $g_txt = $g_ok ? '✅ cerere GA4 cu purchase trimisă' : ( $mx( 'ga_collect' ) > 0 ? '⚠️ GA4 a primit cereri, dar fără purchase' : ( $any( 'gtm_loaded' ) ? '❌ GTM încărcat, nicio cerere către GA4 (blocat în browser)' : '❌ GTM neîncărcat' . ( 'REFUZATE' === $cons ? ' — cookie-uri refuzate' : '' ) ) );
+		$f_px = $mx( 'fb_tr_purchase' ) > 0; $f_srv = $mx( 'pys_relay' ) + $mx( 'capi_gw' );
+		$f_txt = $f_px ? '✅ pixel: Purchase trimis' : ( $mx( 'fb_tr' ) > 0 ? '⚠️ pixel activ, fără Purchase' : ( $any( 'fbq' ) ? '❌ pixel încărcat, nicio cerere' : '❌ pixel neîncărcat' ) );
+		$f_txt .= $f_srv ? ' · server: ' . $mx( 'pys_relay' ) . ' releu + ' . $mx( 'capi_gw' ) . ' gateway' : ' · server: nimic';
+		if ( $short ) {
+			$ico = ( $g_ok && ( $f_px || $f_srv ) ) ? '✅' : ( ( $g_ok || $f_px || $f_srv ) ? '⚠️' : '❌' );
+			return '<span title="' . esc_attr( wp_strip_all_tags( $g_txt . ' | ' . $f_txt . ' | cookie-uri ' . $cons ) ) . '">' . $ico . ' G:' . ( $g_ok ? '✅' : '❌' ) . ' F:' . ( $f_px ? '✅' : ( $f_srv ? '⚠️' : '❌' ) ) . ' <small>' . esc_html( $cons ) . '</small></span>';
+		}
+		$ua = (string) ( $l['ua'] ?? '' ); $br = preg_match( '/FBAN|FBAV/i', $ua ) ? 'browser Facebook' : ( preg_match( '/Instagram/i', $ua ) ? 'browser Instagram' : ( preg_match( '/SamsungBrowser/i', $ua ) ? 'Samsung Internet' : ( preg_match( '/iPhone|iPad/i', $ua ) ? 'iPhone/Safari' : ( preg_match( '/Android/i', $ua ) ? 'Android' : ( preg_match( '/Headless/i', $ua ) ? 'browser automat (headless)' : 'desktop' ) ) ) ) );
+		$rows = [
+			[ 'Pagina de confirmare', 'afișată de ' . $renders . ' ori · ' . count( $h['reports'] ?? [] ) . ' rapoarte din browser' ],
+			[ 'Cookie-uri', '<strong>' . esc_html( $cons ) . '</strong>' ],
+			[ 'Google', esc_html( $g_txt ) . ( $mx( 'ads_conv' ) ? ' · ' . $mx( 'ads_conv' ) . ' cereri conversie Ads' : '' ) . ( $any( 'dl_purchase' ) ? '' : ' · <em>purchase lipsă din dataLayer</em>' ) ],
+			[ 'Facebook', esc_html( $f_txt ) ],
+			[ 'Browser', esc_html( $br ) . ( (int) ( $l['js_errors'] ?? 0 ) ? ' · ' . (int) $l['js_errors'] . ' erori JS pe pagină' : '' ) ],
+		];
+		$out = '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+		foreach ( $rows as $r ) $out .= '<tr><th style="text-align:left;padding:3px 6px 3px 0;vertical-align:top;white-space:nowrap">' . esc_html( $r[0] ) . '</th><td style="padding:3px 0">' . $r[1] . '</td></tr>';
+		$out .= '</table><p style="color:#666;font-size:11px;margin:6px 0 0">Ce a plecat efectiv din browserul cumpărătorului. „Google ✅" = Google Analytics a primit cererea (și Google Ads prin import). Facebook „server" = releul PixelYourSite / Gateway-ul Meta (aceeași comandă, unită de Facebook).</p>';
+		return $out;
 	}
 
 	// ── contextul comenzii de pe pagina de mulțumire ─────────────────────────────────────
@@ -89,6 +155,9 @@ function rec(u,how){try{L.req.push({u:String(u).slice(0,300),h:how,t:Date.now()-
 if(navigator.sendBeacon){var sb=navigator.sendBeacon.bind(navigator);L.sb=sb;navigator.sendBeacon=function(u,d){rec(u,'beacon');return sb(u,d);};}
 if(window.fetch){var f=window.fetch.bind(window);L.fetch=f;window.fetch=function(u,o){rec((u&&u.url)||u,'fetch');return f(u,o);};}
 if(window.XMLHttpRequest){var op=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){rec(u,'xhr');return op.apply(this,arguments);};}
+try{var fsub=HTMLFormElement.prototype.submit;HTMLFormElement.prototype.submit=function(){try{var a=String(this.action||'');var ev=(this.querySelector('[name=ev]')||{}).value||'';rec(a+(a.indexOf('?')>-1?'&':'?')+'ev='+ev,'form');}catch(e){}return fsub.apply(this,arguments);};}catch(e){}
+try{if(performance.setResourceTimingBufferSize)performance.setResourceTimingBufferSize(2000);}catch(e){}
+try{new MutationObserver(function(ms){ms.forEach(function(m){(m.addedNodes||[]).forEach(function(n){try{if(n.tagName==='IFRAME'&&n.src)rec(n.src,'iframe');if(n.tagName==='IMG'&&n.src&&/facebook\.com\/tr/.test(n.src))rec(n.src,'img');}catch(e){}});});}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
 window.addEventListener('error',function(){L.err++;});
 }catch(e){}})();</script>
 		<?php

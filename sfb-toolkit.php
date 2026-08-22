@@ -3,7 +3,7 @@
  * Plugin Name: SFB Toolkit
  * Plugin URI:  https://github.com/safebiz/sfb-toolkit
  * Description: MasterC infrastructure toolkit — file verify + nonce provider + options API + article modification tracker + inventory collector. REST endpoints for AI worker bridge.
- * Version:     1.8.1
+ * Version:     1.8.2
  * Author:      Safebiz Solutions
  * Author URI:  https://safebiz.ro
  * License:     GPL-2.0-or-later
@@ -14,6 +14,11 @@
  * Requires WP:  6.0
  *
  * Changelog:
+ *   1.8.2 (2026-08-22) — Tracking Health: (1) prinde și trimiterile prin FORMULAR/iframe — fbevents.js
+ *         trimite Purchase către facebook.com/tr ca POST de formular într-un iframe ascuns (HAR taki,
+ *         #32138), invizibil pentru fetch/XHR/beacon/Resource Timing ⇒ marcajul spunea fals „doar server";
+ *         (2) buffer Resource Timing 2000 (pagini grele); (3) casetă „Măsurare" în ecranul comenzii
+ *         + coloană în lista de comenzi (HPOS și clasic), în română, doar citire.
  *   1.8.1 (2026-08-22) — Tracking Health OPRIT implicit. 1.8.0 îl pornea pe orice site care se actualiza
  *         automat; modulul se activează acum per site, din Setări → SFB Toolkit (decizie taki).
  *   1.8.0 (2026-08-22) — NOU modul Tracking Health (includes/class-sfb-tracking-health.php): marcaj
