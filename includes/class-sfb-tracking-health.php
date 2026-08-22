@@ -98,25 +98,31 @@ class SFB_Tracking_Health {
 		if ( isset( $c['moove'] ) ) $cons = ( (int) ( $c['moove']['thirdparty'] ?? 0 ) === 1 ) ? 'acceptate' : ( ( (int) ( $c['moove']['advanced'] ?? 0 ) === 1 ) ? 'parțial (publicitate da, terți nu)' : 'REFUZATE' );
 		elseif ( isset( $c['wp_consent_api']['marketing'] ) ) $cons = $c['wp_consent_api']['marketing'] ? 'acceptate' : 'REFUZATE';
 		else $cons = 'necunoscut';
+		// culoarea + eticheta scurtă a cookie-urilor. Bifele ✅/⚠️ din coloană sunt ale Google/Facebook;
+		// consimțământul NU primește bifă — altfel „F:✅ REFUZATE" se citește ca „cookie-uri acceptate" (taki, 22 aug).
+		$c_col   = 'REFUZATE' === $cons ? '#c0453b' : ( 'acceptate' === $cons ? '#2f8a4c' : ( 'necunoscut' === $cons ? '#888' : '#b26a00' ) );
+		$c_short = 0 === strpos( $cons, 'parțial' ) ? 'parțial' : $cons;
 		$g_ok = $mx( 'ga_purchase' ) > 0; $g_txt = $g_ok ? '✅ cerere GA4 cu purchase trimisă' : ( $mx( 'ga_collect' ) > 0 ? '⚠️ GA4 a primit cereri, dar fără purchase' : ( $any( 'gtm_loaded' ) ? '❌ GTM încărcat, nicio cerere către GA4 (blocat în browser)' : '❌ GTM neîncărcat' . ( 'REFUZATE' === $cons ? ' — cookie-uri refuzate' : '' ) ) );
 		$f_px = $mx( 'fb_tr_purchase' ) > 0; $f_srv = $mx( 'pys_relay' ) + $mx( 'capi_gw' );
 		$f_txt = $f_px ? '✅ pixel: Purchase trimis' : ( $mx( 'fb_tr' ) > 0 ? '⚠️ pixel activ, fără Purchase' : ( $any( 'fbq' ) ? '❌ pixel încărcat, nicio cerere' : '❌ pixel neîncărcat' ) );
 		$f_txt .= $f_srv ? ' · server: ' . $mx( 'pys_relay' ) . ' releu + ' . $mx( 'capi_gw' ) . ' gateway' : ' · server: nimic';
 		if ( $short ) {
 			$ico = ( $g_ok && ( $f_px || $f_srv ) ) ? '✅' : ( ( $g_ok || $f_px || $f_srv ) ? '⚠️' : '❌' );
-			return '<span title="' . esc_attr( wp_strip_all_tags( $g_txt . ' | ' . $f_txt . ' | cookie-uri ' . $cons ) ) . '">' . $ico . ' G:' . ( $g_ok ? '✅' : '❌' ) . ' F:' . ( $f_px ? '✅' : ( $f_srv ? '⚠️' : '❌' ) ) . ' <small>' . esc_html( $cons ) . '</small></span>';
+			return '<span title="' . esc_attr( wp_strip_all_tags( 'Google: ' . $g_txt . ' | Facebook: ' . $f_txt . ' | cookie-uri: ' . $cons ) ) . '" style="white-space:nowrap">'
+				. $ico . ' G:' . ( $g_ok ? '✅' : '❌' ) . ' F:' . ( $f_px ? '✅' : ( $f_srv ? '⚠️' : '❌' ) )
+				. '<span style="display:inline-block;margin-left:6px;padding-left:7px;border-left:1px solid #c3c4c7;color:' . $c_col . '">🍪 <small>' . esc_html( $c_short ) . '</small></span></span>';
 		}
 		$ua = (string) ( $l['ua'] ?? '' ); $br = preg_match( '/FBAN|FBAV/i', $ua ) ? 'browser Facebook' : ( preg_match( '/Instagram/i', $ua ) ? 'browser Instagram' : ( preg_match( '/SamsungBrowser/i', $ua ) ? 'Samsung Internet' : ( preg_match( '/iPhone|iPad/i', $ua ) ? 'iPhone/Safari' : ( preg_match( '/Android/i', $ua ) ? 'Android' : ( preg_match( '/Headless/i', $ua ) ? 'browser automat (headless)' : 'desktop' ) ) ) ) );
 		$rows = [
 			[ 'Pagina de confirmare', 'afișată de ' . $renders . ' ori · ' . count( $h['reports'] ?? [] ) . ' rapoarte din browser' ],
-			[ 'Cookie-uri', '<strong>' . esc_html( $cons ) . '</strong>' ],
+			[ 'Cookie-uri', '<strong style="color:' . $c_col . '">🍪 ' . esc_html( $cons ) . '</strong>' ],
 			[ 'Google', esc_html( $g_txt ) . ( $mx( 'ads_conv' ) ? ' · ' . $mx( 'ads_conv' ) . ' cereri conversie Ads' : '' ) . ( $any( 'dl_purchase' ) ? '' : ' · <em>purchase lipsă din dataLayer</em>' ) ],
 			[ 'Facebook', esc_html( $f_txt ) ],
 			[ 'Browser', esc_html( $br ) . ( (int) ( $l['js_errors'] ?? 0 ) ? ' · ' . (int) $l['js_errors'] . ' erori JS pe pagină' : '' ) ],
 		];
 		$out = '<table style="width:100%;font-size:12px;border-collapse:collapse">';
 		foreach ( $rows as $r ) $out .= '<tr><th style="text-align:left;padding:3px 6px 3px 0;vertical-align:top;white-space:nowrap">' . esc_html( $r[0] ) . '</th><td style="padding:3px 0">' . $r[1] . '</td></tr>';
-		$out .= '</table><p style="color:#666;font-size:11px;margin:6px 0 0">Ce a plecat efectiv din browserul cumpărătorului. „Google ✅" = Google Analytics a primit cererea (și Google Ads prin import). Facebook „server" = releul PixelYourSite / Gateway-ul Meta (aceeași comandă, unită de Facebook).</p>';
+		$out .= '</table><p style="color:#666;font-size:11px;margin:6px 0 0">Ce a plecat efectiv din browserul cumpărătorului. „Google ✅" = Google Analytics a primit cererea (și Google Ads prin import). Facebook „server" = releul PixelYourSite / Gateway-ul Meta (aceeași comandă, unită de Facebook). În lista de comenzi, bifele ✅/⚠️/❌ sunt ale Google și Facebook; ce a ales cumpărătorul la cookie-uri stă separat, după linia verticală, marcat cu 🍪.</p>';
 		return $out;
 	}
 
