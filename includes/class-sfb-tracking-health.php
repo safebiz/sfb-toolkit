@@ -28,11 +28,11 @@
  * GDPR: date tehnice despre propria comandă, stocate la operator, nimic trimis terților;
  * categoriile de consimțământ se rețin ca fapt tehnic (ce a ales), nu ca dovadă juridică.
  *
- * Oprire: bifa `sfbtk_tracking_health_enabled` (implicit PORNIT) sau
+ * Pornire: bifa `sfbtk_tracking_health_enabled` (implicit OPRIT — se activează per site, din Setări → SFB Toolkit). Oprire de urgență:
  * `define( 'SFB_TRACKING_HEALTH_DISABLE', true );` în wp-config.php.
  *
  * @package sfb-toolkit
- * @since   1.8.0
+ * @since   1.8.0 (implicit OPRIT din 1.8.1)
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -45,7 +45,7 @@ class SFB_Tracking_Health {
 
 	public function __construct() {
 		if ( defined( 'SFB_TRACKING_HEALTH_DISABLE' ) && SFB_TRACKING_HEALTH_DISABLE ) return;
-		if ( ! get_option( 'sfbtk_tracking_health_enabled', 1 ) ) return;
+		if ( ! get_option( 'sfbtk_tracking_health_enabled', 0 ) ) return; // OPRIT implicit — se pornește per site, din Setări
 
 		add_action( 'wp_head', [ $this, 'head_observer' ], 0 );
 		add_action( 'woocommerce_thankyou', [ $this, 'count_render' ], 1 );
